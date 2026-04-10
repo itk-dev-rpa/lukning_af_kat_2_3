@@ -1,8 +1,11 @@
 """This module contains the main process of the robot."""
 
 import os
+import csv
 import pyodbc
 from datetime import datetime
+from dataclasses import dataclass, asdict
+from typing import List
 
 from OpenOrchestrator.orchestrator_connection.connection import OrchestratorConnection
 from OpenOrchestrator.database.queues import QueueElement
@@ -16,10 +19,33 @@ from robot_framework.custom import nova_api
 from robot_framework import config
 
 
+@dataclass
+class CaseReport:
+    """Report data for a single case."""
+    case_number: str
+    cpr: str
+    case_id: str
+    address_in_database: bool
+    address_in_nova: bool
+    data_mismatch: bool
+    num_tasks: int
+    deadline: str
+    deadline_passed: bool
+    action_taken: str
+    warnings: str
+    timestamp: str
+
+
 # pylint: disable-next=unused-argument
-def process(orchestrator_connection: OrchestratorConnection, queue_element: QueueElement | None = None) -> None:
-    """Do the primary process of the robot."""
-    orchestrator_connection.log_trace("Running process.")
+def process(orchestrator_connection: OrchestratorConnection, queue_element: QueueElement | None = None, dry_run: bool = False) -> None:
+    """Do the primary process of the robot.
+
+    Args:
+        orchestrator_connection: Connection to the orchestrator
+        queue_element: Optional queue element
+        dry_run: If True, only generates report without making changes to cases
+    """
+    orchestrator_connection.log_trace(f"Running process in {'DRY RUN' if dry_run else 'PRODUCTION'} mode.")
     nova_creds = orchestrator_connection.get_credential(config.NOVA_API)
     nova_access = NovaAccess(nova_creds.username, nova_creds.password)
     itk_dev_event_log.setup_logging(orchestrator_connection.get_constant(config.EVENT_LOG_CONN).value)
@@ -27,12 +53,20 @@ def process(orchestrator_connection: OrchestratorConnection, queue_element: Queu
     cases = nova_api.get_cases(nova_access)
     cases_with_duplicate_tasks = []
     cases_without_tasks = []
+    cases_with_data_mismatch = []
     num_closed = 0
-    num_deadline_close =0
+    num_deadline_close = 0
+    report_data: List[CaseReport] = []
+
     for case in cases:
         cpr = case['caseParties'][0]['identification']
+        case_number = case['caseAttributes']['userFriendlyCaseNumber']
+        case_id = case["common"]["uuid"]
         address_found_in_database = is_person_registered_on_address(cpr)
         nova_address_found = address_found_in_database
+        nova_check_failed = False
+        warnings = []
+
         for _ in range(10):
             try:
                 # Nova is unreliable, sometimes we get an error on requests. However, Nova is more up to date.
@@ -40,51 +74,169 @@ def process(orchestrator_connection: OrchestratorConnection, queue_element: Queu
                 # It is unknown if the data in the database may be unreliable for closing a case. It may be very old, according to sources.
                 nova_address_found = nova_cpr.get_address_by_cpr(cpr, nova_access)["address"]["addressLine3"] != "9999 Ukendt"
                 break
-            except:
-                print("WE HAD AN ERROR ON CASE " + case["caseAttributes"]["userFriendlyCaseNumber"])
+            except Exception as e:
+                print(f"Error checking Nova for case {case_number}: {e}")
+                nova_check_failed = True
+                warnings.append(f"Nova check failed: {e}")
 
-        if (nova_address_found != address_found_in_database):
-            print("SOMETHING IS WRONG")
-        case_id = case["common"]["uuid"]
+        # Handle data mismatch between database and Nova
+        data_mismatch = False
+        if not nova_check_failed and (nova_address_found != address_found_in_database):
+            print(f"WARNING: Data mismatch for case {case_number} - Database: {address_found_in_database}, Nova: {nova_address_found}")
+            cases_with_data_mismatch.append(case)
+            data_mismatch = True
+            warnings.append(f"Data mismatch - DB: {address_found_in_database}, Nova: {nova_address_found}")
+            itk_dev_event_log.emit(orchestrator_connection.process_name, f"Data mismatch for case {case_number} - Database: {address_found_in_database}, Nova: {nova_address_found}. Using Nova as source of truth.")
+            # Use Nova as source of truth (newest data)
+            address_found_in_database = nova_address_found
+
         tasks = [task for task in nova_tasks.get_tasks(case_id, nova_access) if not task.closed_date]
-        if len(tasks) > 1:  # Debug
-            print("More than one task found")
-            cases_with_duplicate_tasks.append(case)
+
+        # Handle cases without tasks
         if len(tasks) == 0:
-            print("No tasks found")
+            print(f"No open tasks found for case {case_number} - skipping")
             cases_without_tasks.append(case)
-            # raise AssertionError("More than one open task found. Must investigate.")
-        for task in tasks:
-            # If we should handle cases with more than one task, how do we identify the correct one?
-            deadline_has_passed = task.deadline and task.deadline > datetime.now(task.deadline.tzinfo)
-            if (deadline_has_passed):
-                print("Case deadline is passed. " + case["caseAttributes"]["userFriendlyCaseNumber"])
-                # break
-            # Handle task
-            if address_found_in_database:  # and not deadline_has_passed:
-                if deadline_has_passed:  # Debug
-                    num_deadline_close += 1
-                else:
-                    num_closed += 1
-                    # Close case
-                    print("Closing case " + case["caseAttributes"]["userFriendlyCaseNumber"])
-                break  # Debug
-                # Close task
+            warnings.append("No open tasks found")
+            itk_dev_event_log.emit(orchestrator_connection.process_name, f"Case {case_number} has no open tasks - requires manual review.")
+
+            report_data.append(CaseReport(
+                case_number=case_number,
+                cpr=cpr,
+                case_id=case_id,
+                address_in_database=address_found_in_database,
+                address_in_nova=nova_address_found if not nova_check_failed else None,
+                data_mismatch=data_mismatch,
+                num_tasks=0,
+                deadline="N/A",
+                deadline_passed=False,
+                action_taken="SKIPPED - No open tasks",
+                warnings="; ".join(warnings),
+                timestamp=datetime.now().isoformat()
+            ))
+            continue
+
+        # Handle cases with multiple tasks
+        if len(tasks) > 1:
+            print(f"Multiple tasks found for case {case_number} - will close all if conditions are met")
+            cases_with_duplicate_tasks.append(case)
+            warnings.append(f"{len(tasks)} open tasks found")
+            itk_dev_event_log.emit(orchestrator_connection.process_name, f"Case {case_number} has {len(tasks)} open tasks.")
+
+        # Sort tasks by deadline (newest first) to check the most recent task
+        tasks_sorted = sorted(tasks, key=lambda t: t.deadline if t.deadline else datetime.min.replace(tzinfo=datetime.now().astimezone().tzinfo), reverse=True)
+        task = tasks_sorted[0]
+
+        # Check deadline on the most recent task
+        deadline_has_passed = task.deadline and task.deadline < datetime.now(task.deadline.tzinfo)
+        deadline_str = task.deadline.isoformat() if task.deadline else "No deadline"
+
+        if deadline_has_passed:
+            print(f"Case {case_number} deadline has passed - skipping")
+            warnings.append("Deadline has passed")
+            itk_dev_event_log.emit(orchestrator_connection.process_name, f"Case {case_number} deadline has passed.")
+
+            report_data.append(CaseReport(
+                case_number=case_number,
+                cpr=cpr,
+                case_id=case_id,
+                address_in_database=address_found_in_database,
+                address_in_nova=nova_address_found if not nova_check_failed else None,
+                data_mismatch=data_mismatch,
+                num_tasks=len(tasks),
+                deadline=deadline_str,
+                deadline_passed=True,
+                action_taken="SKIPPED - Deadline passed",
+                warnings="; ".join(warnings),
+                timestamp=datetime.now().isoformat()
+            ))
+            continue
+
+        # Check for address registration
+        if address_found_in_database:
+            num_closed += 1
+            action = "CLOSED" if not dry_run else "WOULD CLOSE"
+            print(f"{action} case {case_number}")
+
+            if not dry_run:
+                # Close ALL tasks on the case
+                for task_to_close in tasks:
+                    nova_tasks.set_task_state(task_to_close.uuid, "Færdig", nova_access)
+                    print(f"  - Closed task {task_to_close.uuid}")
+
+                # Add note to case
+                nova_notes.add_text_note(case_id, "RPA: Adresse registreret, sagen lukkes.", "Adresse registreret på CPR-nummer.", nova_access)
+
+                # Set case state to completed
                 nova_cases.set_case_state(case_id, "Afsluttet", nova_access)
-                nova_notes.add_text_note(case_id, "RPA: Adresse registreret, sagen lukkes.", "Adresse registreret på CPR-nummer.", )
-                # Add case note
-                itk_dev_event_log.emit(orchestrator_connection.process_name, "Person has an address registered, case closed.")
-            else:
-                print("Not closing case " + case["caseAttributes"]["userFriendlyCaseNumber"])
-                break
-                itk_dev_event_log.emit(orchestrator_connection.process_name, "Person does not have an address registered.")
-                # Probably a need to tell someone
-            print(task)
-    print(f"\n{len(cases)} handled, {num_closed} tasks has been closed. {num_deadline_close} would be closed but has passed deadline.")
-    print("Duplicate cases:")
-    print([case["caseAttributes"]["userFriendlyCaseNumber"] for case in cases_with_duplicate_tasks])
-    print("Cases without tasks:")
-    print([case["caseAttributes"]["userFriendlyCaseNumber"] for case in cases_without_tasks])
+
+                itk_dev_event_log.emit(orchestrator_connection.process_name, f"Case {case_number} closed - person has address registered.")
+
+            report_data.append(CaseReport(
+                case_number=case_number,
+                cpr=cpr,
+                case_id=case_id,
+                address_in_database=address_found_in_database,
+                address_in_nova=nova_address_found if not nova_check_failed else None,
+                data_mismatch=data_mismatch,
+                num_tasks=len(tasks),
+                deadline=deadline_str,
+                deadline_passed=False,
+                action_taken=action,
+                warnings="; ".join(warnings),
+                timestamp=datetime.now().isoformat()
+            ))
+        else:
+            print(f"Not closing case {case_number} - no address registered")
+            itk_dev_event_log.emit(orchestrator_connection.process_name, f"Case {case_number} not closed - person does not have an address registered.")
+
+            report_data.append(CaseReport(
+                case_number=case_number,
+                cpr=cpr,
+                case_id=case_id,
+                address_in_database=address_found_in_database,
+                address_in_nova=nova_address_found if not nova_check_failed else None,
+                data_mismatch=data_mismatch,
+                num_tasks=len(tasks),
+                deadline=deadline_str,
+                deadline_passed=False,
+                action_taken="NOT CLOSED - No address registered",
+                warnings="; ".join(warnings),
+                timestamp=datetime.now().isoformat()
+            ))
+    # Generate report
+    report_filename = f"case_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    report_path = os.path.join(os.getcwd(), report_filename)
+
+    with open(report_path, 'w', newline='', encoding='utf-8') as csvfile:
+        if report_data:
+            fieldnames = list(asdict(report_data[0]).keys())
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            for report in report_data:
+                writer.writerow(asdict(report))
+
+    print(f"\n{'=' * 60}")
+    print(f"SUMMARY - {'DRY RUN MODE' if dry_run else 'PRODUCTION MODE'}")
+    print(f"{'=' * 60}")
+    print(f"Total cases handled: {len(cases)}")
+    print(f"Cases {'that would be ' if dry_run else ''}closed: {num_closed}")
+    print(f"Cases with duplicate tasks: {len(cases_with_duplicate_tasks)}")
+    print(f"Cases without tasks: {len(cases_without_tasks)}")
+    print(f"Cases with data mismatch: {len(cases_with_data_mismatch)}")
+    print(f"\nReport saved to: {report_path}")
+    print(f"{'=' * 60}")
+
+    if cases_with_duplicate_tasks:
+        print(f"\nCases with duplicate tasks:")
+        print([case["caseAttributes"]["userFriendlyCaseNumber"] for case in cases_with_duplicate_tasks])
+
+    if cases_without_tasks:
+        print(f"\nCases without tasks:")
+        print([case["caseAttributes"]["userFriendlyCaseNumber"] for case in cases_without_tasks])
+
+    if cases_with_data_mismatch:
+        print(f"\nCases with data mismatch:")
+        print([case["caseAttributes"]["userFriendlyCaseNumber"] for case in cases_with_data_mismatch])
 
 
 def is_person_registered_on_address(cpr: str) -> bool:
@@ -103,4 +255,10 @@ if __name__ == "__main__":
     conn_string = os.getenv("OpenOrchestratorConnString")
     crypto_key = os.getenv("OpenOrchestratorKey")
     oc = OrchestratorConnection("Lukning af Kat 2-3 test", conn_string, crypto_key, '', "")
-    process(oc)
+
+    # Check for dry_run argument
+    import sys
+    dry_run = "--dry-run" in sys.argv or "-d" in sys.argv
+    dry_run = True
+
+    process(oc, dry_run=dry_run)
