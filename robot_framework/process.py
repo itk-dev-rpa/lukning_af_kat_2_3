@@ -70,9 +70,6 @@ def process(orchestrator_connection: OrchestratorConnection, queue_element: Queu
 
         for _ in range(10):
             try:
-                # Nova is unreliable, sometimes we get an error on requests. However, Nova is more up to date.
-                # We expect a change in the database is enough to warrant closing the case, while Nova may contain newer data.
-                # It is unknown if the data in the database may be unreliable for closing a case. It may be very old, according to sources.
                 nova_address = nova_cpr.get_address_by_cpr(cpr, nova_access)
                 nova_address_found = "address" in nova_address and ("addressLine3" not in nova_address["address"] or nova_address["address"]["addressLine3"] != "9999 Ukendt")
                 break
