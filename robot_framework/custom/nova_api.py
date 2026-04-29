@@ -1,10 +1,18 @@
-import urllib
-import requests
+"""Convenience wrappers around KMD Nova API calls used by the robot.
+
+This module contains small helper functions for case and task operations.
+"""
+
 import uuid
 import re
+import urllib.parse
+from datetime import datetime, timezone
+
+import requests
 
 from itk_dev_shared_components.kmd_nova.authentication import NovaAccess
 from itk_dev_shared_components.kmd_nova import nova_tasks
+from itk_dev_shared_components.kmd_nova.nova_objects import Task
 
 
 def get_cases(nova_access: NovaAccess):
@@ -69,6 +77,33 @@ def get_cases(nova_access: NovaAccess):
     return matching_cases
 
 
-def set_task_state(case_uuid, state, nova_access):
-    nova_tasks.update_task()
-    return None
+def set_case_tasks_state(tasks: list[Task], case_uuid: str, state: str, nova_access: NovaAccess) -> None:
+    """Set the state on all provided tasks belonging to a case.
+
+    This updates each task's Nova status code (N/S/F) and sets/clears the
+    `closed_date` accordingly before persisting the change via the Nova API.
+
+    Args:
+        tasks: The tasks to update (typically open tasks on the case).
+        case_uuid: The id of the case the tasks belong to.
+        state: A human readable state, e.g. "Færdig", "Startet", "Ny".
+        nova_access: Access token provider for Nova.
+    """
+    # Map a few common human-readable states to Nova status codes
+    normalized = state.strip().lower()
+    if normalized in {"færdig", "faerdig", "ferdig", "finished", "done", "f"}:
+        status_code = "F"
+    elif normalized in {"startet", "igang", "in progress", "started", "s"}:
+        status_code = "S"
+    else:
+        status_code = "N"
+
+    for t in tasks:
+        t.status_code = status_code
+        if status_code == "F":
+            # Set closed_date when finishing a task
+            t.closed_date = datetime.now(timezone.utc)
+        else:
+            t.closed_date = None
+
+        nova_tasks.update_task(t, case_uuid, nova_access)

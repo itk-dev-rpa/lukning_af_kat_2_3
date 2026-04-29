@@ -2,11 +2,12 @@
 
 import os
 import csv
-import pyodbc
 from datetime import datetime
 from dataclasses import dataclass, asdict
 from typing import List
 
+import pyodbc
+import requests
 from OpenOrchestrator.orchestrator_connection.connection import OrchestratorConnection
 from OpenOrchestrator.database.queues import QueueElement
 
@@ -19,6 +20,7 @@ from robot_framework.custom import nova_api
 from robot_framework import config
 
 
+# pylint: disable=too-many-instance-attributes
 @dataclass
 class CaseReport:
     """Report data for a single case."""
@@ -74,7 +76,7 @@ def process(orchestrator_connection: OrchestratorConnection, queue_element: Queu
                 nova_address = nova_cpr.get_address_by_cpr(cpr, nova_access)
                 nova_address_found = "address" in nova_address and ("addressLine3" not in nova_address["address"] or nova_address["address"]["addressLine3"] != "9999 Ukendt")
                 break
-            except Exception as e:
+            except requests.RequestException as e:
                 print(f"Error checking Nova for case {case_number}: {e}")
                 nova_check_failed = True
                 warnings.append(f"Nova check failed: {e}")
@@ -126,13 +128,12 @@ def process(orchestrator_connection: OrchestratorConnection, queue_element: Queu
             print(f"{action} case {case_number}")
 
             if not dry_run:
-                # Close ALL tasks on the case
-                for task_to_close in tasks:
-                    nova_api.set_task_state(task_to_close.uuid, "Færdig", nova_access)
-                    print(f"  - Closed task {task_to_close.uuid}")
+                # Close ALL tasks on the case in one go
+                nova_api.set_case_tasks_state(tasks, case_id, "Færdig", nova_access)
+                print(f"  - Closed {len(tasks)} task(s)")
 
                 # Add note to case
-                nova_notes.add_text_note(case_id, "RPA: Adresse registreret, sagen lukkes.", "Adresse registreret på CPR-nummer.", nova_access)
+                nova_notes.add_text_note(case_id, "RPA: Adresse registreret, sagen lukkes.", "Adresse registreret på CPR-nummer.", config.CASEWORKER, True, nova_access)
 
                 # Set case state to completed
                 nova_cases.set_case_state(case_id, "Afsluttet", nova_access)
@@ -183,27 +184,27 @@ def process(orchestrator_connection: OrchestratorConnection, queue_element: Queu
             for report in report_data:
                 writer.writerow(asdict(report))
 
-    print(f"\n{'=' * 60}")
+    print("\n" + ("=" * 60))
     print(f"SUMMARY - {'DRY RUN MODE' if dry_run else 'PRODUCTION MODE'}")
-    print(f"{'=' * 60}")
+    print("=" * 60)
     print(f"Total cases handled: {len(cases)}")
     print(f"Cases {'that would be ' if dry_run else ''}closed: {num_closed}")
     print(f"Cases with duplicate tasks: {len(cases_with_duplicate_tasks)}")
     print(f"Cases without tasks: {len(cases_without_tasks)}")
     print(f"Cases with data mismatch: {len(cases_with_data_mismatch)}")
-    print(f"\nReport saved to: {report_path}")
-    print(f"{'=' * 60}")
+    print("\nReport saved to: " + report_path)
+    print("=" * 60)
 
     if cases_with_duplicate_tasks:
-        print(f"\nCases with duplicate tasks:")
+        print("\nCases with duplicate tasks:")
         print([case["caseAttributes"]["userFriendlyCaseNumber"] for case in cases_with_duplicate_tasks])
 
     if cases_without_tasks:
-        print(f"\nCases without tasks:")
+        print("\nCases without tasks:")
         print([case["caseAttributes"]["userFriendlyCaseNumber"] for case in cases_without_tasks])
 
     if cases_with_data_mismatch:
-        print(f"\nCases with data mismatch:")
+        print("\nCases with data mismatch:")
         print([case["caseAttributes"]["userFriendlyCaseNumber"] for case in cases_with_data_mismatch])
 
 
@@ -226,7 +227,8 @@ if __name__ == "__main__":
 
     # Check for dry_run argument
     import sys
-    dry_run = "--dry-run" in sys.argv or "-d" in sys.argv
-    dry_run = True
+    cli_dry_run = ("--dry-run" in sys.argv) or ("-d" in sys.argv)
+    # For local testing, you can force dry-run by uncommenting the next line
+    # cli_dry_run = True
 
-    process(oc, dry_run=dry_run)
+    process(oc, dry_run=cli_dry_run)

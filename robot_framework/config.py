@@ -1,4 +1,5 @@
 """This module contains configuration constants used across the framework"""
+from itk_dev_shared_components.kmd_nova.nova_objects import Caseworker
 
 # The number of times the robot retries on an error before terminating.
 MAX_RETRY_COUNT = 3
@@ -28,3 +29,10 @@ QUEUE_NAME = None
 MAX_TASK_COUNT = 100
 
 # ----------------------
+
+CASEWORKER = Caseworker(
+    name='Rpabruger Rpa94 - MÅ IKKE SLETTES RITM0',
+    ident='AZRPA94',
+    uuid='a577c0a2-a131-43a5-b4e6-b4f5bb75028f',
+    type='group'
+)
