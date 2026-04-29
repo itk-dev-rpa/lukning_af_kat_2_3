@@ -55,7 +55,6 @@ def process(orchestrator_connection: OrchestratorConnection, queue_element: Queu
     cases_without_tasks = []
     cases_with_data_mismatch = []
     num_closed = 0
-    num_deadline_close = 0
     report_data: List[CaseReport] = []
 
     for case in cases:
@@ -72,7 +71,8 @@ def process(orchestrator_connection: OrchestratorConnection, queue_element: Queu
                 # Nova is unreliable, sometimes we get an error on requests. However, Nova is more up to date.
                 # We expect a change in the database is enough to warrant closing the case, while Nova may contain newer data.
                 # It is unknown if the data in the database may be unreliable for closing a case. It may be very old, according to sources.
-                nova_address_found = nova_cpr.get_address_by_cpr(cpr, nova_access)["address"]["addressLine3"] != "9999 Ukendt"
+                nova_address = nova_cpr.get_address_by_cpr(cpr, nova_access)
+                nova_address_found = "address" in nova_address and ("addressLine3" not in nova_address["address"] or nova_address["address"]["addressLine3"] != "9999 Ukendt")
                 break
             except Exception as e:
                 print(f"Error checking Nova for case {case_number}: {e}")
@@ -86,54 +86,22 @@ def process(orchestrator_connection: OrchestratorConnection, queue_element: Queu
             cases_with_data_mismatch.append(case)
             data_mismatch = True
             warnings.append(f"Data mismatch - DB: {address_found_in_database}, Nova: {nova_address_found}")
-            itk_dev_event_log.emit(orchestrator_connection.process_name, f"Data mismatch for case {case_number} - Database: {address_found_in_database}, Nova: {nova_address_found}. Using Nova as source of truth.")
-            # Use Nova as source of truth (newest data)
-            address_found_in_database = nova_address_found
 
         tasks = [task for task in nova_tasks.get_tasks(case_id, nova_access) if not task.closed_date]
+        deadline_has_passed = True
+        deadline_str = "No deadline set"
+        if tasks:
+            # Sort tasks by deadline (newest first) to check the most recent task
+            tasks_sorted = sorted(tasks, key=lambda t: t.deadline if t.deadline else datetime.min.replace(tzinfo=datetime.now().astimezone().tzinfo), reverse=True)
+            task = tasks_sorted[0]
 
-        # Handle cases without tasks
-        if len(tasks) == 0:
-            print(f"No open tasks found for case {case_number} - skipping")
-            cases_without_tasks.append(case)
-            warnings.append("No open tasks found")
-            itk_dev_event_log.emit(orchestrator_connection.process_name, f"Case {case_number} has no open tasks - requires manual review.")
+            # Check deadline on the most recent task
+            deadline_has_passed = task.deadline and task.deadline < datetime.now(task.deadline.tzinfo)
+            deadline_str = task.deadline.isoformat() if task.deadline else "No deadline"
 
-            report_data.append(CaseReport(
-                case_number=case_number,
-                cpr=cpr,
-                case_id=case_id,
-                address_in_database=address_found_in_database,
-                address_in_nova=nova_address_found if not nova_check_failed else None,
-                data_mismatch=data_mismatch,
-                num_tasks=0,
-                deadline="N/A",
-                deadline_passed=False,
-                action_taken="SKIPPED - No open tasks",
-                warnings="; ".join(warnings),
-                timestamp=datetime.now().isoformat()
-            ))
-            continue
-
-        # Handle cases with multiple tasks
-        if len(tasks) > 1:
-            print(f"Multiple tasks found for case {case_number} - will close all if conditions are met")
-            cases_with_duplicate_tasks.append(case)
-            warnings.append(f"{len(tasks)} open tasks found")
-            itk_dev_event_log.emit(orchestrator_connection.process_name, f"Case {case_number} has {len(tasks)} open tasks.")
-
-        # Sort tasks by deadline (newest first) to check the most recent task
-        tasks_sorted = sorted(tasks, key=lambda t: t.deadline if t.deadline else datetime.min.replace(tzinfo=datetime.now().astimezone().tzinfo), reverse=True)
-        task = tasks_sorted[0]
-
-        # Check deadline on the most recent task
-        deadline_has_passed = task.deadline and task.deadline < datetime.now(task.deadline.tzinfo)
-        deadline_str = task.deadline.isoformat() if task.deadline else "No deadline"
-
-        if deadline_has_passed:
-            print(f"Case {case_number} deadline has passed - skipping")
-            warnings.append("Deadline has passed")
-            itk_dev_event_log.emit(orchestrator_connection.process_name, f"Case {case_number} deadline has passed.")
+        if not deadline_has_passed:
+            print(f"Case {case_number} deadline has not yet passed - skipping")
+            warnings.append("Deadline has not yet passed")
 
             report_data.append(CaseReport(
                 case_number=case_number,
@@ -144,15 +112,15 @@ def process(orchestrator_connection: OrchestratorConnection, queue_element: Queu
                 data_mismatch=data_mismatch,
                 num_tasks=len(tasks),
                 deadline=deadline_str,
-                deadline_passed=True,
-                action_taken="SKIPPED - Deadline passed",
+                deadline_passed=False,
+                action_taken="SKIPPED - Deadline not passed",
                 warnings="; ".join(warnings),
                 timestamp=datetime.now().isoformat()
             ))
             continue
 
         # Check for address registration
-        if address_found_in_database:
+        if nova_address_found:
             num_closed += 1
             action = "CLOSED" if not dry_run else "WOULD CLOSE"
             print(f"{action} case {case_number}")
@@ -160,7 +128,7 @@ def process(orchestrator_connection: OrchestratorConnection, queue_element: Queu
             if not dry_run:
                 # Close ALL tasks on the case
                 for task_to_close in tasks:
-                    nova_tasks.set_task_state(task_to_close.uuid, "Færdig", nova_access)
+                    nova_api.set_task_state(task_to_close.uuid, "Færdig", nova_access)
                     print(f"  - Closed task {task_to_close.uuid}")
 
                 # Add note to case

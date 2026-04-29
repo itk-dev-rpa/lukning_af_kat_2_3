@@ -4,6 +4,7 @@ import uuid
 import re
 
 from itk_dev_shared_components.kmd_nova.authentication import NovaAccess
+from itk_dev_shared_components.kmd_nova import nova_tasks
 
 
 def get_cases(nova_access: NovaAccess):
@@ -66,3 +67,8 @@ def get_cases(nova_access: NovaAccess):
         matching_cases.extend(new_cases)
         start_row += 500
     return matching_cases
+
+
+def set_task_state(case_uuid, state, nova_access):
+    nova_tasks.update_task()
+    return None
