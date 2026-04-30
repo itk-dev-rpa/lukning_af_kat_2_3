@@ -169,7 +169,6 @@ def process(
         generate_report(report_data)
 
 
-
 def is_person_registered_on_address(cpr: str) -> bool:
     """Check if a person is registered at an address."""
     # Maybe use a lookup in Nova
