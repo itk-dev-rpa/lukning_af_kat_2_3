@@ -129,21 +129,6 @@ def process(orchestrator_connection: OrchestratorConnection, queue_element: Queu
                 nova_cases.set_case_state(case_id, "Afsluttet", nova_access)
 
                 itk_dev_event_log.emit(orchestrator_connection.process_name, f"Case {case_number} closed.")
-
-            report_data.append(CaseReport(
-                case_number=case_number,
-                cpr=cpr,
-                case_id=case_id,
-                address_in_database=address_found_in_database,
-                address_in_nova=nova_address_found if not nova_check_failed else None,
-                data_mismatch=data_mismatch,
-                num_tasks=len(tasks),
-                deadline=deadline_str,
-                deadline_passed=False,
-                action_taken=action,
-                warnings="; ".join(warnings),
-                timestamp=datetime.now().isoformat()
-            ))
         else:
             report_data.append(CaseReport(
                 case_number=case_number,
@@ -159,17 +144,9 @@ def process(orchestrator_connection: OrchestratorConnection, queue_element: Queu
                 warnings="; ".join(warnings),
                 timestamp=datetime.now().isoformat()
             ))
-            # Generate report
-            report_filename = f"case_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-            report_path = os.path.join(os.getcwd(), report_filename)
+    if dry_run:
+        generate_report(report_data)
 
-            with open(report_path, 'w', newline='', encoding='utf-8') as csvfile:
-                if report_data:
-                    fieldnames = list(asdict(report_data[0]).keys())
-                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                    writer.writeheader()
-                    for report in report_data:
-                        writer.writerow(asdict(report))
 
 
 def is_person_registered_on_address(cpr: str) -> bool:
@@ -183,6 +160,19 @@ def is_person_registered_on_address(cpr: str) -> bool:
     cursor.close()
     return len(data) == 0 or len(data[0][20]) == 0
 
+
+def generate_report(report_data: List[CaseReport]) -> None:
+    # Generate report
+    report_filename = f"case_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    report_path = os.path.join(os.getcwd(), report_filename)
+
+    with open(report_path, 'w', newline='', encoding='utf-8') as csvfile:
+        if report_data:
+            fieldnames = list(asdict(report_data[0]).keys())
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            for report in report_data:
+                writer.writerow(asdict(report))
 
 if __name__ == "__main__":
     conn_string = os.getenv("OpenOrchestratorConnString")
