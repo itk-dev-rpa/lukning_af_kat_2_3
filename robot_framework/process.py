@@ -39,7 +39,10 @@ class CaseReport:
 
 
 # pylint: disable-next=unused-argument
-def process(orchestrator_connection: OrchestratorConnection, queue_element: QueueElement | None = None, dry_run: bool = False) -> None:
+def process(
+    orchestrator_connection: OrchestratorConnection,
+    dry_run: bool = False,
+) -> None:
     """Do the primary process of the robot.
 
     Args:
@@ -47,10 +50,14 @@ def process(orchestrator_connection: OrchestratorConnection, queue_element: Queu
         queue_element: Optional queue element
         dry_run: If True, only generates report without making changes to cases
     """
-    orchestrator_connection.log_trace(f"Running process in {'DRY RUN' if dry_run else 'PRODUCTION'} mode.")
+    orchestrator_connection.log_trace(
+        f"Running process in {'DRY RUN' if dry_run else 'PRODUCTION'} mode."
+    )
     nova_creds = orchestrator_connection.get_credential(config.NOVA_API)
     nova_access = NovaAccess(nova_creds.username, nova_creds.password)
-    itk_dev_event_log.setup_logging(orchestrator_connection.get_constant(config.EVENT_LOG_CONN).value)
+    itk_dev_event_log.setup_logging(
+        orchestrator_connection.get_constant(config.EVENT_LOG_CONN).value
+    )
 
     cases = nova_api.get_cases(nova_access)
     cases_with_data_mismatch = []
@@ -58,92 +65,107 @@ def process(orchestrator_connection: OrchestratorConnection, queue_element: Queu
     report_data: List[CaseReport] = []
 
     for case in cases:
-        cpr = case['caseParties'][0]['identification']
-        case_number = case['caseAttributes']['userFriendlyCaseNumber']
+        cpr = case["caseParties"][0]["identification"]
+        case_number = case["caseAttributes"]["userFriendlyCaseNumber"]
         case_id = case["common"]["uuid"]
+
+        # DB vs Nova address checks
         address_found_in_database = is_person_registered_on_address(cpr)
-        nova_address_found = address_found_in_database
-        nova_check_failed = False
-        warnings = []
+        nova_address_found, warnings, nova_check_failed = _check_nova_address_with_retry(
+            cpr, nova_access
+        )
+        if nova_check_failed:
+            # fall back to DB state if Nova call failed
+            nova_address_effective = None
+        else:
+            # if nova returns None (no data), treat as not found; else use bool
+            nova_address_effective = bool(nova_address_found)
 
-        for _ in range(10):
-            try:
-                nova_address = nova_cpr.get_address_by_cpr(cpr, nova_access)
-                nova_address_found = "address" in nova_address and ("addressLine3" not in nova_address["address"] or nova_address["address"]["addressLine3"] != "9999 Ukendt")
-                break
-            except requests.RequestException as e:
-                nova_check_failed = True
-                warnings.append(f"Nova check failed: {e}")
-
-        # Handle data mismatch between database and Nova
+        # Data mismatch
         data_mismatch = False
-        if not nova_check_failed and (nova_address_found != address_found_in_database):
+        if not nova_check_failed and (
+            nova_address_effective != address_found_in_database
+        ):
             cases_with_data_mismatch.append(case)
             data_mismatch = True
-            warnings.append(f"Data mismatch - DB: {address_found_in_database}, Nova: {nova_address_found}")
+            warnings.append(
+                f"Data mismatch - DB: {address_found_in_database}, Nova: {nova_address_effective}"
+            )
 
-        tasks = [task for task in nova_tasks.get_tasks(case_id, nova_access) if not task.closed_date]
+        # Tasks and deadline
+        tasks = [
+            task for task in nova_tasks.get_tasks(case_id, nova_access) if not task.closed_date
+        ]
         deadline_has_passed = True
         deadline_str = "No deadline set"
         if tasks:
-            # Sort tasks by deadline (newest first) to check the most recent task
-            tasks_sorted = sorted(tasks, key=lambda t: t.deadline if t.deadline else datetime.min.replace(tzinfo=datetime.now().astimezone().tzinfo), reverse=True)
+            # Sort tasks by deadline (newest first)
+            tasks_sorted = sorted(
+                tasks,
+                key=lambda t: t.deadline
+                if t.deadline
+                else datetime.min.replace(tzinfo=datetime.now().astimezone().tzinfo),
+                reverse=True,
+            )
             task = tasks_sorted[0]
-
-            # Check deadline on the most recent task
-            deadline_has_passed = task.deadline and task.deadline < datetime.now(task.deadline.tzinfo)
+            deadline_has_passed = bool(task.deadline and task.deadline < datetime.now(task.deadline.tzinfo))
             deadline_str = task.deadline.isoformat() if task.deadline else "No deadline"
 
+        # If deadline not passed, just report and continue
         if not deadline_has_passed:
             warnings.append("Deadline has not yet passed")
-
-            report_data.append(CaseReport(
+            _append_report(
+                report_data,
                 case_number=case_number,
                 cpr=cpr,
                 case_id=case_id,
                 address_in_database=address_found_in_database,
-                address_in_nova=nova_address_found if not nova_check_failed else None,
+                address_in_nova=nova_address_effective,
                 data_mismatch=data_mismatch,
                 num_tasks=len(tasks),
                 deadline=deadline_str,
                 deadline_passed=False,
                 action_taken="SKIPPED - Deadline not passed",
-                warnings="; ".join(warnings),
-                timestamp=datetime.now().isoformat()
-            ))
+                warnings=warnings,
+            )
             continue
 
-        # Check for address registration
-        if nova_address_found:
+        # Close or report depending on address state
+        if nova_address_effective:
             num_closed += 1
-            action = "CLOSED" if not dry_run else "WOULD CLOSE"
-
             if not dry_run:
                 # Close ALL tasks on the case in one go
                 nova_api.set_case_tasks_state(tasks, case_id, "Færdig", nova_access)
-
-                # Add note to case
-                nova_notes.add_text_note(case_id, "RPA: Adresse registreret, sagen lukkes.", "Adresse registreret på CPR-nummer.", config.CASEWORKER, True, nova_access)
-
+                # Add a note to a case
+                nova_notes.add_text_note(
+                    case_id,
+                    "RPA: Adresse registreret, sagen lukkes.",
+                    "Adresse registreret på CPR-nummer.",
+                    config.CASEWORKER,
+                    True,
+                    nova_access,
+                )
                 # Set case state to completed
                 nova_cases.set_case_state(case_id, "Afsluttet", nova_access)
-
-                itk_dev_event_log.emit(orchestrator_connection.process_name, f"Case {case_number} closed.")
+                itk_dev_event_log.emit(
+                    orchestrator_connection.process_name, f"Case {case_number} closed."
+                )
         else:
-            report_data.append(CaseReport(
+            _append_report(
+                report_data,
                 case_number=case_number,
                 cpr=cpr,
                 case_id=case_id,
                 address_in_database=address_found_in_database,
-                address_in_nova=nova_address_found if not nova_check_failed else None,
+                address_in_nova=nova_address_effective,
                 data_mismatch=data_mismatch,
                 num_tasks=len(tasks),
                 deadline=deadline_str,
                 deadline_passed=False,
                 action_taken="NOT CLOSED - No address registered",
-                warnings="; ".join(warnings),
-                timestamp=datetime.now().isoformat()
-            ))
+                warnings=warnings,
+            )
+
     if dry_run:
         generate_report(report_data)
 
@@ -162,7 +184,7 @@ def is_person_registered_on_address(cpr: str) -> bool:
 
 
 def generate_report(report_data: List[CaseReport]) -> None:
-    # Generate report
+    """Generate a CSV report of the cases."""
     report_filename = f"case_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     report_path = os.path.join(os.getcwd(), report_filename)
 
@@ -173,6 +195,71 @@ def generate_report(report_data: List[CaseReport]) -> None:
             writer.writeheader()
             for report in report_data:
                 writer.writerow(asdict(report))
+
+
+def _check_nova_address_with_retry(cpr: str, nova_access: NovaAccess, retries: int = 10) -> tuple[bool | None, list[str], bool]:
+    """Check Nova for an address with simple retry logic.
+
+    Returns a tuple: ``(nova_address_found, warnings, nova_check_failed)``.
+    If the check fails for all retries, ``nova_address_found`` will be ``None`` and
+    ``nova_check_failed`` will be ``True``.
+    """
+    warnings: list[str] = []
+    nova_check_failed = False
+    nova_address_found: bool | None = None
+
+    for _ in range(retries):
+        try:
+            nova_address = nova_cpr.get_address_by_cpr(cpr, nova_access)
+            nova_address_found = (
+                "address" in nova_address
+                and (
+                    "addressLine3" not in nova_address["address"]
+                    or nova_address["address"]["addressLine3"] != "9999 Ukendt"
+                )
+            )
+            nova_check_failed = False
+            break
+        except requests.RequestException as exc:  # network / API issue
+            nova_check_failed = True
+            warnings.append(f"Nova check failed: {exc}")
+
+    return nova_address_found, warnings, nova_check_failed
+
+
+def _append_report(
+    report_data: List[CaseReport],
+    *,
+    case_number: str,
+    cpr: str,
+    case_id: str,
+    address_in_database: bool,
+    address_in_nova: bool | None,
+    data_mismatch: bool,
+    num_tasks: int,
+    deadline: str,
+    deadline_passed: bool,
+    action_taken: str,
+    warnings: list[str],
+) -> None:
+    """Create a ``CaseReport`` entry and append it to ``report_data``."""
+    report_data.append(
+        CaseReport(
+            case_number=case_number,
+            cpr=cpr,
+            case_id=case_id,
+            address_in_database=address_in_database,
+            address_in_nova=address_in_nova,
+            data_mismatch=data_mismatch,
+            num_tasks=num_tasks,
+            deadline=deadline,
+            deadline_passed=deadline_passed,
+            action_taken=action_taken,
+            warnings="; ".join(warnings),
+            timestamp=datetime.now().isoformat(),
+        )
+    )
+
 
 if __name__ == "__main__":
     conn_string = os.getenv("OpenOrchestratorConnString")
