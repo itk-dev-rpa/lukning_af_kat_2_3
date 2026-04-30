@@ -9,7 +9,6 @@ from typing import List
 import pyodbc
 import requests
 from OpenOrchestrator.orchestrator_connection.connection import OrchestratorConnection
-from OpenOrchestrator.database.queues import QueueElement
 
 from itk_dev_shared_components.kmd_nova import nova_tasks, nova_cases, nova_notes
 from itk_dev_shared_components.kmd_nova import cpr as nova_cpr
