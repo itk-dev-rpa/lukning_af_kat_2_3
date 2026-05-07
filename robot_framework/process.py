@@ -6,7 +6,6 @@ from datetime import datetime
 from dataclasses import dataclass, asdict
 from typing import List
 
-import pyodbc
 import requests
 from OpenOrchestrator.orchestrator_connection.connection import OrchestratorConnection
 
@@ -26,9 +25,7 @@ class CaseReport:
     case_number: str
     cpr: str
     case_id: str
-    address_in_database: bool
     address_in_nova: bool
-    data_mismatch: bool
     num_tasks: int
     deadline: str
     deadline_passed: bool
@@ -59,7 +56,6 @@ def process(
     )
 
     cases = nova_api.get_cases(nova_access)
-    cases_with_data_mismatch = []
     num_closed = 0
     report_data: List[CaseReport] = []
 
@@ -68,28 +64,23 @@ def process(
         case_number = case["caseAttributes"]["userFriendlyCaseNumber"]
         case_id = case["common"]["uuid"]
 
-        # DB vs Nova address checks
-        address_found_in_database = is_person_registered_on_address(cpr)
         nova_address_found, warnings, nova_check_failed = _check_nova_address_with_retry(
             cpr, nova_access
         )
         if nova_check_failed:
-            # fall back to DB state if Nova call failed
-            nova_address_effective = None
-        else:
-            # if nova returns None (no data), treat as not found; else use bool
-            nova_address_effective = bool(nova_address_found)
-
-        # Data mismatch
-        data_mismatch = False
-        if not nova_check_failed and (
-            nova_address_effective != address_found_in_database
-        ):
-            cases_with_data_mismatch.append(case)
-            data_mismatch = True
-            warnings.append(
-                f"Data mismatch - DB: {address_found_in_database}, Nova: {nova_address_effective}"
+            _append_report(
+                report_data,
+                case_number=case_number,
+                cpr=cpr,
+                case_id=case_id,
+                address_in_nova=False,
+                num_tasks=0,
+                deadline="Unknown - Nova check failed",
+                deadline_passed=False,
+                action_taken="SKIPPED - Nova check failed",
+                warnings=warnings,
             )
+            continue
 
         # Tasks and deadline
         tasks = [
@@ -118,9 +109,7 @@ def process(
                 case_number=case_number,
                 cpr=cpr,
                 case_id=case_id,
-                address_in_database=address_found_in_database,
-                address_in_nova=nova_address_effective,
-                data_mismatch=data_mismatch,
+                address_in_nova=nova_address_found,
                 num_tasks=len(tasks),
                 deadline=deadline_str,
                 deadline_passed=False,
@@ -130,7 +119,7 @@ def process(
             continue
 
         # Close or report depending on address state
-        if nova_address_effective:
+        if nova_address_found:
             num_closed += 1
             if not dry_run:
                 # Close ALL tasks on the case in one go
@@ -155,9 +144,7 @@ def process(
                 case_number=case_number,
                 cpr=cpr,
                 case_id=case_id,
-                address_in_database=address_found_in_database,
-                address_in_nova=nova_address_effective,
-                data_mismatch=data_mismatch,
+                address_in_nova=nova_address_found,
                 num_tasks=len(tasks),
                 deadline=deadline_str,
                 deadline_passed=False,
@@ -167,18 +154,6 @@ def process(
 
     if dry_run:
         generate_report(report_data)
-
-
-def is_person_registered_on_address(cpr: str) -> bool:
-    """Check if a person is registered at an address."""
-    # Maybe use a lookup in Nova
-    query = f"SELECT * FROM [DWH].[Mart].[AdresseAktuel] WHERE Vejkode IN (9902, 9901) AND CPR = '{cpr}'"
-    connection = pyodbc.connect(config.SQL_CONN)
-    cursor = connection.cursor()
-    cursor.execute(query)
-    data = cursor.fetchall()
-    cursor.close()
-    return len(data) == 0 or len(data[0][20]) == 0
 
 
 def generate_report(report_data: List[CaseReport]) -> None:
@@ -195,16 +170,16 @@ def generate_report(report_data: List[CaseReport]) -> None:
                 writer.writerow(asdict(report))
 
 
-def _check_nova_address_with_retry(cpr: str, nova_access: NovaAccess, retries: int = 10) -> tuple[bool | None, list[str], bool]:
+def _check_nova_address_with_retry(cpr: str, nova_access: NovaAccess, retries: int = 10) -> tuple[bool, list[str], bool]:
     """Check Nova for an address with simple retry logic.
 
     Returns a tuple: ``(nova_address_found, warnings, nova_check_failed)``.
-    If the check fails for all retries, ``nova_address_found`` will be ``None`` and
+    If the check fails for all retries, ``nova_address_found`` will be ``False`` and
     ``nova_check_failed`` will be ``True``.
     """
     warnings: list[str] = []
     nova_check_failed = False
-    nova_address_found: bool | None = None
+    nova_address_found = False
 
     for _ in range(retries):
         try:
@@ -231,9 +206,7 @@ def _append_report(
     case_number: str,
     cpr: str,
     case_id: str,
-    address_in_database: bool,
-    address_in_nova: bool | None,
-    data_mismatch: bool,
+    address_in_nova: bool,
     num_tasks: int,
     deadline: str,
     deadline_passed: bool,
@@ -246,9 +219,7 @@ def _append_report(
             case_number=case_number,
             cpr=cpr,
             case_id=case_id,
-            address_in_database=address_in_database,
             address_in_nova=address_in_nova,
-            data_mismatch=data_mismatch,
             num_tasks=num_tasks,
             deadline=deadline,
             deadline_passed=deadline_passed,

@@ -16,7 +16,6 @@ SCREENSHOT_SENDER = "robot@friend.dk"
 ERROR_EMAIL = "Error Email"
 NOVA_API = "Nova API"
 EVENT_LOG_CONN = "Event Log"
-SQL_CONN = "DRIVER={ODBC Driver 17 for SQL Server};SERVER=FaellesSQL;DATABASE=DWH;Trusted_Connection=yes"
 
 
 # Queue specific configs

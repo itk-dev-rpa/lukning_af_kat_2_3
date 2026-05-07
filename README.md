@@ -14,13 +14,11 @@ Robotten:
 ## Krav
 - Python 3.11+
 - Adgang til KMD Novas API (client id/secret)
-- Adgang til den anvendte SQL-database til adresseopslag (ODBC-driver 17 til SQL Server)
 
 ## Konfiguration
 Centrale indstillinger findes i `robot_framework/config.py`:
 - `NOVA_API`: Navnet på legitimationssættet i OpenOrchestrator (client id/secret)
 - `EVENT_LOG_CONN`: Navn på Event Log-forbindelsen i OpenOrchestrator
-- `SQL_CONN`: ODBC-connection string til adresseopslag i DWH
 - `CASEWORKER`: Sagsbehandler (bruger/gruppe), som anvendes som afsender på journalnoter
 
 Andre generelle rammeindstillinger (fx `MAX_RETRY_COUNT`) findes i samme fil.
