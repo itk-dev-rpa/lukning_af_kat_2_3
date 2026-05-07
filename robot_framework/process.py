@@ -231,7 +231,7 @@ def _append_report(
 
 
 if __name__ == "__main__":
-    from  uuid import uuid4
+    from uuid import uuid4
     conn_string = os.getenv("OpenOrchestratorConnString")
     crypto_key = os.getenv("OpenOrchestratorKey")
     oc = OrchestratorConnection("Lukning af Kat 2-3 test", conn_string, crypto_key, '', "", uuid4())
