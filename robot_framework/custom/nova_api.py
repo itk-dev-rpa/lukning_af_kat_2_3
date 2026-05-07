@@ -24,6 +24,14 @@ def get_cases(nova_access: NovaAccess):
         "caseAttributes": {
             "title": "Kat 2",
         },
+        "states": {
+            "states": [
+                {"progressState": "Opstaaet"},
+                {"progressState": "Oplyst"},
+                {"progressState": "Afgjort"},
+                {"progressState": "Bestilt"},
+            ]
+        },
         "caseGetOutput": {
             "caseAttributes": {
                 "title": True,
@@ -71,7 +79,6 @@ def get_cases(nova_access: NovaAccess):
         response.raise_for_status()
         more_cases = response.json()["pagingInformation"]['hasMoreRows']
         new_cases = response.json()["cases"]
-        new_cases = [case for case in new_cases if regex.match(case["caseAttributes"]["title"]) and case['state']['progressState'] != "Afsluttet"]
         matching_cases.extend(new_cases)
         start_row += 500
     return matching_cases

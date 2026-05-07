@@ -136,7 +136,7 @@ def process(
                 # Set case state to completed
                 nova_cases.set_case_state(case_id, "Afsluttet", nova_access)
                 itk_dev_event_log.emit(
-                    orchestrator_connection.process_name, f"Case {case_number} closed."
+                    orchestrator_connection.process_name, "Case closed."
                 )
         else:
             _append_report(
