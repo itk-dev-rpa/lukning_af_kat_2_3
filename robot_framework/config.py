@@ -35,3 +35,5 @@ CASEWORKER = Caseworker(
     uuid='a577c0a2-a131-43a5-b4e6-b4f5bb75028f',
     type='group'
 )
+
+LOAD_PAGING = 100

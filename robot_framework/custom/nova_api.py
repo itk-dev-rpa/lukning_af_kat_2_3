@@ -13,6 +13,7 @@ import requests
 from itk_dev_shared_components.kmd_nova.authentication import NovaAccess
 from itk_dev_shared_components.kmd_nova import nova_tasks
 from itk_dev_shared_components.kmd_nova.nova_objects import Task
+from robot_framework import config
 
 
 def get_cases(nova_access: NovaAccess):
@@ -53,11 +54,6 @@ def get_cases(nova_access: NovaAccess):
             },
             "numberOfDocuments": True,
 
-        },
-        "paging": {
-            "startRow": 1,
-            "numberOfRows": 500,
-            "calculateTotalNumberOfRows": True
         }
     }
     params = {"api-version": "2.0-Case"}
@@ -71,8 +67,7 @@ def get_cases(nova_access: NovaAccess):
     while more_cases:
         paging = {
                 "startRow": start_row,
-                "numberOfRows": 500,
-                "calculateTotalNumberOfRows": True
+                "numberOfRows": config.LOAD_PAGING
         }
         payload["paging"] = paging
         response = requests.put(url, params=params, headers=headers, json=payload, timeout=60)
@@ -81,7 +76,7 @@ def get_cases(nova_access: NovaAccess):
         new_cases = response.json()["cases"]
         new_cases = [case for case in new_cases if regex.match(case["caseAttributes"]["title"])]
         matching_cases.extend(new_cases)
-        start_row += 500
+        start_row += config.LOAD_PAGING
     return matching_cases
 
 
