@@ -1,62 +1,81 @@
-# Robot-Framework V4
+# Lukning af Kat 2–3 – Robot
 
-This repo is meant to be used as a template for robots made for [OpenOrchestrator](https://github.com/itk-dev-rpa/OpenOrchestrator) v2.
+Dette projekt er en robot, der hjælper med at lukke sager i KMD Nova for kategorierne "Kat 2" og "Kat 3", når borgeren er registreret på en adresse.
 
-## Quick start
+Robotten:
+- Finder relevante sager i Nova (titel matcher `Kat 2` eller `Kat 3`, og som ikke allerede er afsluttede)
+- Slår adresse op via Nova CPR-service
+- Hvis der er adresse registreret, og deadline er overskredet, så:
+  - Lukker alle tilknyttede opgaver på sagen (bulk-opdatering)
+  - Tilføjer en journalnote
+  - Lukker sagen (sætter sagsstatus til "Afsluttet")
+- Understøtter sikker "dry-run" (ingen ændringer i Nova; kun CSV-rapport)
 
-1. To use this template simply use this repo as a template (see [Creating a repository from a template](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template)).
-__Don't__ include all branches.
+## Krav
+- Python 3.11+
+- Adgang til KMD Novas API (client id/secret)
 
-2. Go to `robot_framework/__main__.py` and choose between the linear framework or queue based framework.
+## Konfiguration
+Centrale indstillinger findes i `robot_framework/config.py`:
+- `NOVA_API`: Navnet på legitimationssættet i OpenOrchestrator (client id/secret)
+- `EVENT_LOG_CONN`: Navn på Event Log-forbindelsen i OpenOrchestrator
+- `CASEWORKER`: Sagsbehandler (bruger/gruppe), som anvendes som afsender på journalnoter
 
-3. Implement all functions in the files:
-    * `robot_framework/initialize.py`
-    * `robot_framework/reset.py`
-    * `robot_framework/process.py`
+Andre generelle rammeindstillinger (fx `MAX_RETRY_COUNT`) findes i samme fil.
 
-4. Change `config.py` to your needs.
+## Sådan virker robotten (overblik)
+Den primære logik findes i `robot_framework/process.py`:
+1. Henter adgangstoken til Nova via `NovaAccess`
+2. Finder sager med titler som matcher "Kat 2/3" (`nova_api.get_cases`)
+3. Finder åbne opgaver på sagen og den seneste deadline
+4. Hvis deadline er overskredet og borgeren har adresse registreret:
+   - Lukker alle opgaver med `nova_api.set_case_tasks_state(..., "Færdig", ...)`
+   - Tilføjer journalnote via `nova_notes.add_text_note`
+   - Sætter sagen til "Afsluttet" via `nova_cases.set_case_state`
+5. Skriver en rapportlinje for hver sag til en CSV-fil i projektmappen ved dryrun
 
-5. Fill out the dependencies in the `pyproject.toml` file with all packages needed by the robot.
+Rapportfilen navngives automatisk som `case_report_YYYYMMDD_HHMMSS.csv` og gemmes i nuværende arbejdsmappe.
 
-6. Feel free to add more files as needed. Remember that any additional python files must
-be located in the folder `robot_framework` or a subfolder of it.
+## Kørsel lokalt
+Der er to måder at køre robotten lokalt på.
 
-When the robot is run from OpenOrchestrator the `main.py` file is run which results
-in the following:
+1) Kør den specifikke proces i dry-run (ændrer intet i Nova):
+```powershell
+$env:OpenOrchestratorConnString = "<din-conn-string>"
+$env:OpenOrchestratorKey = "<din-krypteringsnøgle>"
+python .\robot_framework\process.py --dry-run
+```
+Flaget `--dry-run` eller `-d` sikrer, at robotten kun genererer rapporten og ikke foretager ændringer i Nova.
 
-1. The working directory is changed to where `main.py` is located.
-2. A virtual environment is automatically setup with the required packages.
-3. The framework is called passing on all arguments needed by [OpenOrchestrator](https://github.com/itk-dev-rpa/OpenOrchestrator).
+2) Kør hele frameworkets entrypoint (som i produktion):
+```powershell
+python .\main.py
+```
+`main.py` starter frameworket (lineær flow), som kalder `process()` internt.
 
-## Requirements
+## Kørsel i OpenOrchestrator
+- Udrul koden som en robot i OpenOrchestrator
+- Opret/angiv følgende:
+  - Credential: navn som i `config.NOVA_API` med client id/secret til Nova
+  - Constant: navn som i `config.EVENT_LOG_CONN` med forbindelsesstreng til event logging
+- Robotten forventer ingen kø (lineært flow); `QUEUE_NAME = None`
 
-Minimum python version 3.11
+## Output og logging
+- CSV-rapport: `case_report_YYYYMMDD_HHMMSS.csv` i arbejdsbiblioteket
+- Event log: initialiseres via `itk_dev_event_log.setup_logging()`
 
-## Flow
+## Sikkerhed og fejlhåndtering
+- Nova-kald håndterer HTTP-fejl med `requests.raise_for_status()`
+- Netværksfejl mod Nova under adresseopslag genforsøges i op til 10 forsøg per sag
+- "Dry-run" anbefales lokalt og for test
 
-This framework contains two different flows: A linear and a queue based.
-You should only ever use one at a time. You choose which one by going into `robot_framework/__main__.py`
-and uncommenting the framework you want. They are both disabled by default and an error will be
-raised to remind you if you don't choose.
+## Udviklernoter
+- Opgavelukning sker i bulk med `set_case_tasks_state`, som sætter `status_code` og `closed_date` på hver opgave og persisterer via Nova API.
+- Flowet bruger lineær ramme (`robot_framework/__main__.py`).
+- Strukturen og hjælpefunktioner findes primært i `robot_framework/custom/nova_api.py` og `robot_framework/process.py`.
 
-### Linear Flow
+## Linting og CI
+Projektet er sat op til linting (flake8/pylint) via Github Actions. Workflowet kører ved push og ligger i `.github/workflows/Linting.yml` (hvis repoet er forbundet med GitHub Actions).
 
-The linear framework is used when a robot is just going from A to Z without fetching jobs from an
-OpenOrchestrator queue.
-The flow of the linear framework is sketched up in the following illustration:
-
-![Linear Flow diagram](Robot-Framework.svg)
-
-### Queue Flow
-
-The queue framework is used when the robot is doing multiple bite-sized tasks defined in an
-OpenOrchestrator queue.
-The flow of the queue framework is sketched up in the following illustration:
-
-![Queue Flow diagram](Robot-Queue-Framework.svg)
-
-## Linting and Github Actions
-
-This template is also setup with flake8 and pylint linting in Github Actions.
-This workflow will trigger whenever you push your code to Github.
-The workflow is defined under `.github/workflows/Linting.yml`.
+## Licens
+Se `LICENSE` i roden af projektet.
