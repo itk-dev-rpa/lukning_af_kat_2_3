@@ -58,7 +58,7 @@ def get_cases(nova_access: NovaAccess):
     }
     params = {"api-version": "2.0-Case"}
     headers = {'Content-Type': 'application/json', 'Authorization': f"Bearer {nova_access.get_bearer_token()}"}
-    regex = re.compile("^Kat\\.?\\s[23]")
+    regex = re.compile("^[Kk][Aa][Tt]\\.?\\s[23]")
 
     matching_cases = []
     more_cases = True
