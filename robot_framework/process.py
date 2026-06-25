@@ -175,9 +175,9 @@ def process(
 def _send_closed_cases_mail(orchestrator_connection: OrchestratorConnection, case_numbers: List[str], error_cases: List[str]) -> None:
     """Send a single mail listing the case numbers that were closed."""
     receivers = json.loads(orchestrator_connection.process_arguments)["report_receivers"]
-    body = f"Følgende sager er blevet lukket:\n\n{"\n".join(case_numbers)}."
+    body = "Følgende sager er blevet lukket:\n\n" + "\n".join(case_numbers)
     if len(len(error_cases) > 0):
-        body += f"\n\nVigtigt! Disse sager burde lukkes, men processen fejlede:\n\n{"\n".join(error_cases)}"
+        body += "\n\nVigtigt! Disse sager burde lukkes, men processen fejlede:\n\n" + "\n".join(error_cases)
     smtp_util.send_email(
         receivers,
         config.REPORT_SENDER,
