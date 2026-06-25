@@ -12,6 +12,9 @@ SMTP_SERVER = "smtp.adm.aarhuskommune.dk"
 SMTP_PORT = 25
 SCREENSHOT_SENDER = "robot@friend.dk"
 
+# Sender for the report mail of closed cases
+REPORT_SENDER = "itk-rpa@ba.aarhus.dk"
+
 # Constant/Credential names
 ERROR_EMAIL = "Error Email"
 NOVA_API = "Nova API"

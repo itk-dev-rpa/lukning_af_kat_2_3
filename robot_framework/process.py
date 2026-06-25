@@ -2,6 +2,7 @@
 
 import os
 import csv
+import json
 from datetime import datetime
 from dataclasses import dataclass, asdict
 from typing import List
@@ -12,6 +13,7 @@ from OpenOrchestrator.orchestrator_connection.connection import OrchestratorConn
 from itk_dev_shared_components.kmd_nova import nova_tasks, nova_cases, nova_notes
 from itk_dev_shared_components.kmd_nova import cpr as nova_cpr
 from itk_dev_shared_components.kmd_nova.authentication import NovaAccess
+from itk_dev_shared_components.smtp import smtp_util
 import itk_dev_event_log
 
 from robot_framework.custom import nova_api
@@ -57,6 +59,7 @@ def process(
 
     cases = nova_api.get_cases(nova_access)
     num_closed = 0
+    closed_case_numbers: List[str] = []
     report_data: List[CaseReport] = []
 
     for case in cases:
@@ -119,7 +122,7 @@ def process(
             continue
 
         # Close or report depending on address state
-        
+
         action_taken = "Case closed."
         if nova_address_found:
             num_closed += 1
@@ -129,8 +132,8 @@ def process(
                 # Add a note to a case
                 nova_notes.add_text_note(
                     case_id,
-                    "RPA: Adresse registreret, sagen lukkes.",
-                    "Adresse registreret på CPR-nummer.",
+                    "Borger er i bolig, sagen lukkes.",
+                    "-",
                     config.CASEWORKER,
                     True,
                     nova_access,
@@ -140,6 +143,7 @@ def process(
                 itk_dev_event_log.emit(
                     orchestrator_connection.process_name, "Case closed."
                 )
+                closed_case_numbers.append(case_number)
         else:
             action_taken = "NOT CLOSED - No address registered"
 
@@ -158,6 +162,23 @@ def process(
 
     if dry_run:
         generate_report(report_data)
+
+    if not dry_run and closed_case_numbers:
+        _send_closed_cases_mail(orchestrator_connection, closed_case_numbers)
+
+
+def _send_closed_cases_mail(orchestrator_connection: OrchestratorConnection, case_numbers: List[str]) -> None:
+    """Send a single mail listing the case numbers that were closed."""
+    receivers = json.loads(orchestrator_connection.process_arguments)["report_receivers"]
+    body = "Følgende sager er blevet lukket:\n\n" + "\n".join(case_numbers)
+    smtp_util.send_email(
+        receivers,
+        config.REPORT_SENDER,
+        f"Lukning af Kat 2-3: {len(case_numbers)} sager lukket",
+        body,
+        config.SMTP_SERVER,
+        config.SMTP_PORT,
+    )
 
 
 def generate_report(report_data: List[CaseReport]) -> None:
