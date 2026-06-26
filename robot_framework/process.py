@@ -119,6 +119,8 @@ def process(
             continue
 
         # Close or report depending on address state
+        
+        action_taken = "Case closed."
         if nova_address_found:
             num_closed += 1
             if not dry_run:
@@ -139,18 +141,20 @@ def process(
                     orchestrator_connection.process_name, "Case closed."
                 )
         else:
-            _append_report(
-                report_data,
-                case_number=case_number,
-                cpr=cpr,
-                case_id=case_id,
-                address_in_nova=nova_address_found,
-                num_tasks=len(tasks),
-                deadline=deadline_str,
-                deadline_passed=False,
-                action_taken="NOT CLOSED - No address registered",
-                warnings=warnings,
-            )
+            action_taken = "NOT CLOSED - No address registered"
+
+        _append_report(
+            report_data,
+            case_number=case_number,
+            cpr=cpr,
+            case_id=case_id,
+            address_in_nova=nova_address_found,
+            num_tasks=len(tasks),
+            deadline=deadline_str,
+            deadline_passed=deadline_has_passed,
+            action_taken=action_taken,
+            warnings=warnings,
+        )
 
     if dry_run:
         generate_report(report_data)
