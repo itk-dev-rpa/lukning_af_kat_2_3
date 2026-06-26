@@ -133,7 +133,8 @@ def process(
                     nova_api.set_case_tasks_state(tasks, case_id, "Færdig", nova_access)
                     # Set case state to completed
                     nova_cases.set_case_state(case_id, "Afsluttet", nova_access)
-                except requests.exceptions.HTTPError:
+                except requests.exceptions.HTTPError as e:
+                    orchestrator_connection.log_error(f"Case {case_number} failed. Error message:\n\n{e}")
                     error_case_numbers.append(case_number)
                     continue
                 # Add a note to a case
@@ -148,6 +149,7 @@ def process(
                 itk_dev_event_log.emit(
                     orchestrator_connection.process_name, "Case closed."
                 )
+                orchestrator_connection.log_info(f"Case {case_number} is closed.");
                 closed_case_numbers.append(case_number)
         else:
             action_taken = "NOT CLOSED - No address registered"
@@ -168,7 +170,7 @@ def process(
     if dry_run:
         generate_report(report_data)
 
-    if not dry_run and closed_case_numbers:
+    if not dry_run and (closed_case_numbers or error_case_numbers):
         _send_closed_cases_mail(orchestrator_connection, closed_case_numbers, error_case_numbers)
 
 
@@ -176,7 +178,7 @@ def _send_closed_cases_mail(orchestrator_connection: OrchestratorConnection, cas
     """Send a single mail listing the case numbers that were closed."""
     receivers = json.loads(orchestrator_connection.process_arguments)["report_receivers"]
     body = "Følgende sager er blevet lukket:\n\n" + "\n".join(case_numbers)
-    if len(len(error_cases) > 0):
+    if error_cases and len(error_cases) > 0:
         body += "\n\nVigtigt! Disse sager burde lukkes, men processen fejlede:\n\n" + "\n".join(error_cases)
     smtp_util.send_email(
         receivers,
