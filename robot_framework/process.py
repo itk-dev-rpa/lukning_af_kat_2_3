@@ -128,31 +128,10 @@ def process(
         if nova_address_found:
             num_closed += 1
             if not dry_run:
-                # Close ALL tasks on the case in one go
-                try:
-                    nova_api.set_case_tasks_state(tasks, case_id, "Færdig", nova_access)
-                    # Approve all unapproved documents on the case
-                    nova_api.approve_case_documents(case_id, nova_access)
-                    # Set case state to completed
-                    nova_cases.set_case_state(case_id, "Afsluttet", nova_access)
-                except requests.exceptions.HTTPError as e:
-                    orchestrator_connection.log_error(f"Case {case_number} failed. Error message:\n\n{e}")
+                if _close_case(orchestrator_connection, case_id, case_number, tasks, nova_access):
+                    closed_case_numbers.append(case_number)
+                else:
                     error_case_numbers.append(case_number)
-                    continue
-                # Add a note to a case
-                nova_notes.add_text_note(
-                    case_id,
-                    "Borger er i bolig, sagen lukkes.",
-                    "-",
-                    config.CASEWORKER,
-                    True,
-                    nova_access,
-                )
-                itk_dev_event_log.emit(
-                    orchestrator_connection.process_name, "Case closed."
-                )
-                orchestrator_connection.log_info(f"Case {case_number} is closed.");
-                closed_case_numbers.append(case_number)
         else:
             action_taken = "NOT CLOSED - No address registered"
 
@@ -174,6 +153,42 @@ def process(
 
     if not dry_run and (closed_case_numbers or error_case_numbers):
         _send_closed_cases_mail(orchestrator_connection, closed_case_numbers, error_case_numbers)
+
+
+def _close_case(
+    orchestrator_connection: OrchestratorConnection,
+    case_id: str,
+    case_number: str,
+    tasks: list,
+    nova_access: NovaAccess,
+) -> bool:
+    """Close a case: finish its tasks, approve documents, set state and add a note.
+
+    Returns True if the case was closed, False if a Nova API call failed.
+    """
+    try:
+        # Close ALL tasks on the case in one go
+        nova_api.set_case_tasks_state(tasks, case_id, "Færdig", nova_access)
+        # Approve all unapproved documents on the case
+        nova_api.approve_case_documents(case_id, nova_access)
+        # Set case state to completed
+        nova_cases.set_case_state(case_id, "Afsluttet", nova_access)
+    except requests.exceptions.HTTPError as e:
+        orchestrator_connection.log_error(f"Case {case_number} failed. Error message:\n\n{e}")
+        return False
+
+    # Add a note to a case
+    nova_notes.add_text_note(
+        case_id,
+        "Borger er i bolig, sagen lukkes.",
+        "-",
+        config.CASEWORKER,
+        True,
+        nova_access,
+    )
+    itk_dev_event_log.emit(orchestrator_connection.process_name, "Case closed.")
+    orchestrator_connection.log_info(f"Case {case_number} is closed.")
+    return True
 
 
 def _send_closed_cases_mail(orchestrator_connection: OrchestratorConnection, case_numbers: List[str], error_cases: List[str]) -> None:
