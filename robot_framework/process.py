@@ -131,6 +131,8 @@ def process(
                 # Close ALL tasks on the case in one go
                 try:
                     nova_api.set_case_tasks_state(tasks, case_id, "Færdig", nova_access)
+                    # Approve all unapproved documents on the case
+                    nova_api.approve_case_documents(case_id, nova_access)
                     # Set case state to completed
                     nova_cases.set_case_state(case_id, "Afsluttet", nova_access)
                 except requests.exceptions.HTTPError as e:
