@@ -174,7 +174,15 @@ def _close_case(
         # Set case state to completed
         nova_cases.set_case_state(case_id, "Afsluttet", nova_access)
     except requests.exceptions.HTTPError as e:
-        orchestrator_connection.log_error(f"Case {case_number} failed. Error message:\n\n{e}")
+        response = e.response
+        details = ""
+        if response is not None:
+            details = (
+                f"Status: {response.status_code}\n"
+                f"URL: {response.url}\n"
+                f"Response: {response.text}"
+            )
+        orchestrator_connection.log_error(f"Case {case_number} failed. Error message:\n\n{e}\n\n{details}")
         return False
 
     # Add a note to a case
