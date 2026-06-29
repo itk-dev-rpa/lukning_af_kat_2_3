@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import requests
 
 from itk_dev_shared_components.kmd_nova.authentication import NovaAccess
-from itk_dev_shared_components.kmd_nova import nova_tasks
+from itk_dev_shared_components.kmd_nova import nova_tasks, nova_documents
 from itk_dev_shared_components.kmd_nova.nova_objects import Task
 from robot_framework import config
 
@@ -110,3 +110,47 @@ def set_case_tasks_state(tasks: list[Task], case_uuid: str, state: str, nova_acc
             t.closed_date = None
 
         nova_tasks.update_task(t, case_uuid, nova_access)
+
+
+def approve_case_documents(case_uuid: str, nova_access: NovaAccess) -> int:
+    """Approve all not-yet-approved documents on a case.
+
+    Fetches the case's documents and sets ``approved = True`` on every document
+    that isn't already approved. Approving a document makes it read-only in Nova,
+    so this is intended to run as part of closing a case.
+
+    Args:
+        case_uuid: The id of the case whose documents should be approved.
+        nova_access: Access token provider for Nova.
+
+    Returns:
+        The number of documents that were approved.
+
+    Raises:
+        requests.exceptions.HTTPError: If any document update fails.
+    """
+    documents = nova_documents.get_documents(case_uuid, nova_access)
+
+    url = urllib.parse.urljoin(nova_access.domain, "api/Document/Update")
+    params = {"api-version": "2.0-Case"}
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': f"Bearer {nova_access.get_bearer_token()}",
+    }
+
+    approved_count = 0
+    for document in documents:
+        if document.approved:
+            continue
+        payload = {
+            "common": {
+                "transactionId": str(uuid.uuid4()),
+                "uuid": document.uuid,
+            },
+            "approved": True,
+        }
+        response = requests.patch(url, params=params, headers=headers, json=payload, timeout=60)
+        response.raise_for_status()
+        approved_count += 1
+
+    return approved_count

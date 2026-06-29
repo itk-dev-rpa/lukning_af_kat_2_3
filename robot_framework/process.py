@@ -2,6 +2,7 @@
 
 import os
 import csv
+import json
 from datetime import datetime
 from dataclasses import dataclass, asdict
 from typing import List
@@ -12,6 +13,7 @@ from OpenOrchestrator.orchestrator_connection.connection import OrchestratorConn
 from itk_dev_shared_components.kmd_nova import nova_tasks, nova_cases, nova_notes
 from itk_dev_shared_components.kmd_nova import cpr as nova_cpr
 from itk_dev_shared_components.kmd_nova.authentication import NovaAccess
+from itk_dev_shared_components.smtp import smtp_util
 import itk_dev_event_log
 
 from robot_framework.custom import nova_api
@@ -57,6 +59,8 @@ def process(
 
     cases = nova_api.get_cases(nova_access)
     num_closed = 0
+    closed_case_numbers: List[str] = []
+    error_case_numbers: List[str] = []
     report_data: List[CaseReport] = []
 
     for case in cases:
@@ -119,27 +123,15 @@ def process(
             continue
 
         # Close or report depending on address state
-        
+
         action_taken = "Case closed."
         if nova_address_found:
             num_closed += 1
             if not dry_run:
-                # Close ALL tasks on the case in one go
-                nova_api.set_case_tasks_state(tasks, case_id, "Færdig", nova_access)
-                # Add a note to a case
-                nova_notes.add_text_note(
-                    case_id,
-                    "RPA: Adresse registreret, sagen lukkes.",
-                    "Adresse registreret på CPR-nummer.",
-                    config.CASEWORKER,
-                    True,
-                    nova_access,
-                )
-                # Set case state to completed
-                nova_cases.set_case_state(case_id, "Afsluttet", nova_access)
-                itk_dev_event_log.emit(
-                    orchestrator_connection.process_name, "Case closed."
-                )
+                if _close_case(orchestrator_connection, case_id, case_number, tasks, nova_access):
+                    closed_case_numbers.append(case_number)
+                else:
+                    error_case_numbers.append(case_number)
         else:
             action_taken = "NOT CLOSED - No address registered"
 
@@ -158,6 +150,69 @@ def process(
 
     if dry_run:
         generate_report(report_data)
+
+    if not dry_run and (closed_case_numbers or error_case_numbers):
+        _send_closed_cases_mail(orchestrator_connection, closed_case_numbers, error_case_numbers)
+
+
+def _close_case(
+    orchestrator_connection: OrchestratorConnection,
+    case_id: str,
+    case_number: str,
+    tasks: list,
+    nova_access: NovaAccess,
+) -> bool:
+    """Close a case: finish its tasks, approve documents, set state and add a note.
+
+    Returns True if the case was closed, False if a Nova API call failed.
+    """
+    try:
+        # Close ALL tasks on the case in one go
+        nova_api.set_case_tasks_state(tasks, case_id, "Færdig", nova_access)
+        # Approve all unapproved documents on the case
+        nova_api.approve_case_documents(case_id, nova_access)
+        # Set case state to completed
+        nova_cases.set_case_state(case_id, "Afsluttet", nova_access)
+    except requests.exceptions.HTTPError as e:
+        response = e.response
+        details = ""
+        if response is not None:
+            details = (
+                f"Status: {response.status_code}\n"
+                f"URL: {response.url}\n"
+                f"Response: {response.text}"
+            )
+        orchestrator_connection.log_error(f"Case {case_number} failed. Error message:\n\n{e}\n\n{details}")
+        return False
+
+    # Add a note to a case
+    nova_notes.add_text_note(
+        case_id,
+        "Borger er i bolig, sagen lukkes.",
+        "-",
+        config.CASEWORKER,
+        True,
+        nova_access,
+    )
+    itk_dev_event_log.emit(orchestrator_connection.process_name, "Case closed.")
+    orchestrator_connection.log_info(f"Case {case_number} is closed.")
+    return True
+
+
+def _send_closed_cases_mail(orchestrator_connection: OrchestratorConnection, case_numbers: List[str], error_cases: List[str]) -> None:
+    """Send a single mail listing the case numbers that were closed."""
+    receivers = json.loads(orchestrator_connection.process_arguments)["report_receivers"]
+    body = "Følgende sager er blevet lukket:\n\n" + "\n".join(case_numbers)
+    if error_cases and len(error_cases) > 0:
+        body += "\n\nVigtigt! Disse sager burde lukkes, men processen fejlede:\n\n" + "\n".join(error_cases)
+    smtp_util.send_email(
+        receivers,
+        config.REPORT_SENDER,
+        f"Lukning af Kat 2-3: {len(case_numbers)} sager lukket",
+        body,
+        config.SMTP_SERVER,
+        config.SMTP_PORT,
+    )
 
 
 def generate_report(report_data: List[CaseReport]) -> None:
@@ -240,4 +295,4 @@ if __name__ == "__main__":
     crypto_key = os.getenv("OpenOrchestratorKey")
     oc = OrchestratorConnection("Lukning af Kat 2-3 test", conn_string, crypto_key, '', "", uuid4())
 
-    process(oc, dry_run=True)
+    process(oc, dry_run=False)
